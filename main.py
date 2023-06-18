@@ -5,9 +5,13 @@ import hashlib
 from datetime import datetime, timedelta
 from json import loads, dumps
 
+from time import sleep
+
 
 conn = sqlite3.connect("database.db")
 cur = conn.cursor()
+
+connected_users = []
 
 
 class User:
@@ -28,7 +32,7 @@ class User:
                f"nickname: {self.nickname}, phone_number: {self.phone_number})"
 
 
-class Utils:
+class Utils:  # Ваще хуйню зробив
     @staticmethod
     def create_db():
         cur.execute("""CREATE TABLE IF NOT EXISTS users(
@@ -49,7 +53,7 @@ class Utils:
         conn.commit()
 
     @staticmethod
-    def register_user(first_name: str, last_name: str, nickname: str, phone_number: str, password: str) -> dict:
+    def sign_up_user(first_name: str, last_name: str, nickname: str, phone_number: str, password: str) -> dict:
         cur.execute("SELECT COUNT(*) FROM users WHERE nickname = ?", (nickname, ))
         nickname_is_used = cur.fetchone()[0] > 0
 
@@ -70,11 +74,11 @@ class Utils:
         )
         conn.commit()
 
-        print(f"[CLIENT] info: Registered {nickname}")
+        print(f"[CLIENT] info: Signed up {nickname}")
         return {"ok": True}
 
     @staticmethod
-    def login_user(phone_number: str, password: str) -> dict:
+    def sign_in_user(phone_number: str, password: str) -> dict:
         cur.execute("SELECT password FROM users WHERE phone_number = ?", (phone_number, ))
         password_to_check = cur.fetchone()
 
@@ -85,8 +89,8 @@ class Utils:
         if password_to_check[0] != password:
             return {"ok": False, "message": "Wrong password"}
 
-        cur.execute("SELECT id, first_name, last_name, nickname FROM users WHERE phone_number = ?", (phone_number, ))
-        user_id, first_name, last_name, nickname = cur.fetchone()
+        cur.execute("SELECT id, first_name, last_name, nickname, phone_number FROM users WHERE phone_number = ?", (phone_number, ))
+        user_id, first_name, last_name, nickname, phone_number = cur.fetchone()
 
         time = datetime.now()
         str_time = time.strftime("%Y.%m.%d %H:%M:%S.%f")
@@ -96,7 +100,7 @@ class Utils:
         cur.execute("INSERT INTO sessions(token, id, expires_in) VALUES (?, ?, ?)", (token, user_id, expires_in))
         conn.commit()
 
-        print(f"[CLIENT] info: Logged in {nickname}")
+        print(f"[CLIENT] info: Signed in {nickname}")
         return {
             "ok": True,
             "data": {
@@ -104,7 +108,8 @@ class Utils:
                 "id": user_id,
                 "first_name": first_name,
                 "last_name": last_name,
-                "nickname": nickname
+                "nickname": nickname,
+                "phone_number": phone_number
             }
         }
 
@@ -119,7 +124,7 @@ class Processor:
         except AttributeError:
             self.result = {"ok": False, "message": "Wrong operation"}
 
-    def register(self):
+    def sign_up(self):
         for key in self.data["data"]:
             if self.data["data"][key] == "":
                 self.result = {"ok": False, "message": "Fields must be not null"}
@@ -131,9 +136,9 @@ class Processor:
         phone_number = str(self.data["data"]["phone_number"])
         password = str(self.data["data"]["password"])
 
-        self.result = Utils.register_user(first_name, last_name, nickname, phone_number, password)
+        self.result = Utils.sign_up_user(first_name, last_name, nickname, phone_number, password)
 
-    def login(self):
+    def sign_in(self):
         for key in self.data["data"]:
             if self.data["data"][key] == "":
                 self.result = {"ok": False, "message": "Fields must be not null"}
@@ -142,7 +147,7 @@ class Processor:
         phone_number = str(self.data["data"]["phone_number"])
         password = str(self.data["data"]["password"])
 
-        self.result = Utils.login_user(phone_number, password)
+        self.result = Utils.sign_in_user(phone_number, password)
 
 
 class ClientHandler(asyncio.Protocol):
@@ -158,20 +163,35 @@ class ClientHandler(asyncio.Protocol):
     def unpack(data: bytes) -> dict:
         return loads(data.decode("utf-8"))
 
+    def send_all(self, data: dict):
+        for connection in connected_users:
+            connection.transport.write(self.pack(data))
+
     def connection_made(self, transport):
         self.transport = transport
 
         self.host, self.port = self.transport.get_extra_info('peername')
+        connected_users.append(self)
+
         print(f"[CLIENT] info: New connection {self.host}:{self.port}")
 
     def data_received(self, data):
         data = loads(data.decode("utf-8"))
+
+        if data["type"] == "message":
+            self.send_all(data)
+
+            return
+
         process = Processor(data)
 
         self.transport.write(self.pack(process.result))
 
     def connection_lost(self, exc):
         self.transport.close()
+
+        connected_users.remove(self)
+
         print(f"[CLIENT] info: Disconnected {self.host}:{self.port}")
 
 
@@ -200,7 +220,7 @@ def main():
     Utils.create_db()
 
     loop = asyncio.new_event_loop()
-    server = Server(loop=loop)
+    server = Server(host="127.0.0.1", loop=loop)
 
     loop.create_task(server.run())
     loop.run_forever()
