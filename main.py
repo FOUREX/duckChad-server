@@ -32,7 +32,7 @@ class User:
                f"nickname: {self.nickname}, phone_number: {self.phone_number})"
 
 
-class Utils:  # Ваще хуйню зробив
+class Utils:
     @staticmethod
     def create_db():
         cur.execute("""CREATE TABLE IF NOT EXISTS users(
@@ -180,7 +180,10 @@ class ClientHandler(asyncio.Protocol):
 
         if data["type"] == "message":
             self.send_all(data)
+            return
 
+        if data["type"] == "sign_out":
+            self.transport.write(self.pack({"type": "sign_out"}))
             return
 
         process = Processor(data)
